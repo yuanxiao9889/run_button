@@ -1,9 +1,11 @@
 __pycache__/
 *.pyc
-*.spec
 build/
 dist/
+*.spec
 .trae/
+ComfyRunButton.exe
+config.json
+.DS_Store
 .vscode/
-*.exe
-*.user
+.idea/
