@@ -17,10 +17,10 @@ if %errorlevel% equ 0 (
     
     :: Check if dependencies are installed for system python
     echo Checking dependencies...
-    "%PYTHON%" -c "import requests, websocket, keyboard" >nul 2>nul
+    !PYTHON! -c "import requests, websocket, keyboard" >nul 2>nul
     if !errorlevel! neq 0 (
         echo [INFO] Installing required libraries...
-        "%PYTHON%" -m pip install requests websocket-client keyboard
+        !PYTHON! -m pip install requests websocket-client keyboard
     )
     goto :RUN
 )

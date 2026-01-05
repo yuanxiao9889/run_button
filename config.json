@@ -1,5 +1,7 @@
 {
-    "comfy_url": "192.168.5.159:8188",
+    "comfy_url": "19",
     "hotkey_toggle": "F9",
-    "hotkey_run": "ctrl+enter"
+    "hotkey_run": "ctrl+enter",
+    "binding_code": "123",
+    "control_mode": "extension"
 }
