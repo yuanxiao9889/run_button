@@ -342,6 +342,9 @@ class FloatApp:
         self.last_trigger_time = 0
         self.browser_client_id = None # Stored from sidecar handshake
         
+        self.last_trigger_time = 0
+        self.is_request_pending = False
+        
         self.load_config()
         self.setup_urls()
         
@@ -706,24 +709,30 @@ class FloatApp:
                 return "127.0.0.1"
 
     def send_trigger(self):
-        # Debounce: Prevent double-triggering from keyboard or fast clicks
-        if time.time() - self.last_trigger_time < 0.5:
+        # 1. Debounce: Prevent double-triggering from keyboard or fast clicks
+        if time.time() - self.last_trigger_time < 0.8: # Increased from 0.5s to 0.8s
             return
+            
+        # 2. Pending Check: If a request is already flying, don't send another
+        if self.is_request_pending:
+            return
+
         self.last_trigger_time = time.time()
+        self.is_request_pending = True
         
         # Run in thread to avoid blocking the hotkey hook
         threading.Thread(target=self._trigger_worker, daemon=True).start()
 
     def _trigger_worker(self):
-        # Check Control Mode
-        if self.config.get("control_mode") == "extension":
-            self.send_extension_trigger()
-            return
-            
-        # API Mode Check
-        if self.btn.state == "offline": return
+        try:
+            # Check Control Mode
+            if self.config.get("control_mode") == "extension":
+                self.send_extension_trigger()
+                return
+                
+            # API Mode Check
+            if self.btn.state == "offline": return
 
-        try: 
             # Priority 1: Manual Binding Code
             binding_code = self.config.get("binding_code", "")
             
@@ -739,7 +748,10 @@ class FloatApp:
                 "targetClientId": target_id, # The precise target (if known)
                 "targetBindingId": binding_code # Manual binding code
             }
-            resp = requests.post(self.trigger_url, json=payload, timeout=1)
+            
+            # Use a slightly longer timeout to allow server to process if busy, 
+            # but short enough to fail fast if down.
+            resp = requests.post(self.trigger_url, json=payload, timeout=2)
             
             if resp.status_code == 404:
                 self.safe_alert("连接错误", 
@@ -747,8 +759,13 @@ class FloatApp:
                     "请确保此 'run_button' 插件已安装在：\n"
                     "ComfyUI/custom_nodes/run_button\n\n"
                     "并重启 ComfyUI。", "error")
+                    
         except Exception as e:
             print(f"Trigger request failed: {e}")
+            
+        finally:
+            # Always release the lock
+            self.is_request_pending = False
 
     def send_interrupt(self):
         # Run in thread to avoid blocking
@@ -767,7 +784,19 @@ class FloatApp:
         # Only register the Run/Queue hotkey
         hotkey = self.config.get("hotkey_run", "ctrl+enter")
         
-        try: keyboard.add_hotkey(hotkey, self.send_trigger)
+        # Unhook any previous hooks just in case
+        try: keyboard.unhook_all()
+        except: pass
+        
+        try: 
+            # suppress=False lets the key event pass through to other apps (e.g. ComfyUI itself)
+            # This is safer to prevent blocking keys if the user is typing in a text box
+            keyboard.add_hotkey(hotkey, self.send_trigger, suppress=False)
+            
+            # Register toggle hotkey too
+            toggle_hotkey = self.config.get("hotkey_toggle", "F9")
+            keyboard.add_hotkey(toggle_hotkey, self.toggle_smart, suppress=False)
+            
         except Exception as e:
             self.handle_hotkey_conflict("hotkey_run", hotkey, str(e))
 
