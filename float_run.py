@@ -617,8 +617,9 @@ class FloatApp:
         # Clean shutdown
         try: self.ws.close()
         except: pass
-        self.root.quit()
-        sys.exit(0)
+        try: self.root.destroy()
+        except: pass
+        os._exit(0) # Force kill all threads including daemon and main
 
     def prompt_for_binding(self):
         curr_code = self.config.get("binding_code", "")
