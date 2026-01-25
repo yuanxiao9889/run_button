@@ -23,15 +23,22 @@
         }, 1000);
 
         // Backup: DOM Check (in case app.api is hidden or slow)
+        let foundDom = false;
         const checkDom = setInterval(() => {
-            if (document.querySelector('.comfy-menu') || document.querySelector('#comfy-settings-dialog')) {
+            if (foundDom) {
+                clearInterval(checkDom);
+                return;
+            }
+            if (document.querySelector('.comfy-menu') || document.querySelector('#comfy-settings-dialog') || document.querySelector('.comfy-menu-bg')) {
+                foundDom = true;
                 clearInterval(checkDom);
                 // We found UI elements, likely ComfyUI
+                // console.log("[RunButton Page] ComfyUI DOM detected. Sending signal.");
                 window.postMessage({ source: "runbutton-page", type: "comfy-detected", data: { method: "dom" } }, "*");
             }
-        }, 2000);
-        // Stop DOM check after 30s
-        setTimeout(() => clearInterval(checkDom), 30000);
+        }, 1000); // Check every 1s instead of 2s to be faster
+        // Stop DOM check after 60s
+        setTimeout(() => clearInterval(checkDom), 60000);
 
         function hookComfy(api) {
             // Forward events to content script via postMessage

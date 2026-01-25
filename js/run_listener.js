@@ -14,7 +14,7 @@ app.registerExtension({
         
         app.queuePrompt = async function() {
             lastQueueTime = Date.now();
-            console.log("[RunButton] app.queuePrompt called at", lastQueueTime);
+            // console.log("[RunButton] app.queuePrompt called at", lastQueueTime);
             return originalQueuePrompt.apply(this, arguments);
         };
 

@@ -12,6 +12,8 @@ import socket
 import hashlib
 import base64
 import struct
+import logging
+import subprocess
 
 # Visual Theme (Split Design)
 THEME = {
@@ -54,8 +56,30 @@ DEFAULT_CONFIG = {
     "hotkey_run": "ctrl+enter"
 }
 
+def setup_logging():
+    log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_button_debug.log")
+    
+    # Create handlers
+    file_handler = logging.FileHandler(log_file, encoding='utf-8', mode='a')
+    console_handler = logging.StreamHandler()
+    
+    # Create formatters and add it to handlers
+    log_format = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    file_handler.setFormatter(log_format)
+    console_handler.setFormatter(log_format)
+    
+    # Add handlers to the logger
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    return log_file
+
+LOG_FILE = setup_logging()
+
 class DesignButton(tk.Canvas):
-    def __init__(self, master, run_cmd, stop_cmd, toggle_mode_cmd, settings_cmd, hotkey_cmd, binding_cmd, switch_mode_cmd, quit_cmd, **kwargs):
+    def __init__(self, master, run_cmd, stop_cmd, toggle_mode_cmd, settings_cmd, hotkey_cmd, binding_cmd, switch_mode_cmd, quit_cmd, open_log_cmd, **kwargs):
         self.reload_hotkeys_cmd = kwargs.pop('reload_hotkeys_cmd', None)
         super().__init__(master, **kwargs)
         self.run_cmd = run_cmd
@@ -66,6 +90,7 @@ class DesignButton(tk.Canvas):
         self.binding_cmd = binding_cmd
         self.switch_mode_cmd = switch_mode_cmd
         self.quit_cmd = quit_cmd
+        self.open_log_cmd = open_log_cmd
         
         # State
         self.is_mini = False
@@ -305,9 +330,11 @@ class DesignButton(tk.Canvas):
         m.add_separator()
         m.add_command(label="服务器地址设置", command=self.settings_cmd)
         m.add_command(label="快捷键设置", command=self.hotkey_cmd)
+        m.add_command(label="重置快捷键 (Fix Hotkeys)", command=self.reload_hotkeys_cmd)
         m.add_command(label="配对码设置", command=self.binding_cmd)
         m.add_command(label="切换控制模式 (API/插件)", command=self.switch_mode_cmd)
         m.add_separator()
+        m.add_command(label="查看日志 (View Logs)", command=self.open_log_cmd)
         m.add_command(label="退出程序", command=self.quit_cmd)
         m.tk_popup(e.x_root, e.y_root)
 
@@ -530,6 +557,7 @@ class FloatApp:
 
     def send_extension_trigger(self, action="trigger"):
         if not hasattr(self, 'extension_socket') or not self.extension_socket:
+            logging.warning("Extension trigger failed: Socket not connected")
             messagebox.showwarning("插件未连接", "浏览器插件未连接！\n请确保已在浏览器中安装并启用了 ComfyUI Run Button Helper 插件。")
             return
 
@@ -541,7 +569,9 @@ class FloatApp:
             header.append(0x81)
             header.append(len(msg))
             self.extension_socket.send(header + msg.encode())
-        except:
+            logging.info(f"Extension trigger frame sent: {action}")
+        except Exception as e:
+            logging.error(f"Extension trigger send failed: {e}")
             self.extension_connected = False
             self.extension_socket = None
 
@@ -609,9 +639,19 @@ class FloatApp:
             switch_mode_cmd=self.toggle_mode_control,
             quit_cmd=self.quit_app,
             reload_hotkeys_cmd=self.reload_hotkeys,
+            open_log_cmd=self.open_log_file,
             bg="#2C2C2C", highlightthickness=0
         )
         self.btn.pack(fill=tk.BOTH, expand=True)
+
+    def open_log_file(self):
+        try:
+            if os.name == 'nt':  # Windows
+                os.startfile(LOG_FILE)
+            elif os.name == 'posix':  # macOS/Linux
+                subprocess.call(('open', LOG_FILE))
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open log file: {e}")
 
     def quit_app(self):
         # Clean shutdown
@@ -710,14 +750,27 @@ class FloatApp:
                 return "127.0.0.1"
 
     def send_trigger(self):
-        # 1. Debounce: Prevent double-triggering from keyboard or fast clicks
-        if time.time() - self.last_trigger_time < 0.8: # Increased from 0.5s to 0.8s
+        # 1. Visual Feedback for Hotkey Detection
+        # Flash the border or something to show we heard the key
+        try:
+            current_bg = self.btn.cget("bg")
+            # Flash lighter
+            self.btn.create_rectangle(0, 0, self.btn.winfo_width(), self.btn.winfo_height(), 
+                                    fill="#FFFFFF", stipple="gray25", outline="", tag="flash")
+            self.root.after(100, lambda: self.btn.delete("flash"))
+        except: pass
+
+        # 2. Debounce: Prevent double-triggering from keyboard or fast clicks
+        if time.time() - self.last_trigger_time < 0.5: # Reduced to 0.5s for better responsiveness
+            logging.debug(f"Trigger ignored (Debounce): {time.time() - self.last_trigger_time:.2f}s")
             return
             
-        # 2. Pending Check: If a request is already flying, don't send another
+        # 3. Pending Check: If a request is already flying, don't send another
         if self.is_request_pending:
+            logging.warning("Trigger ignored (Request Pending)")
             return
 
+        logging.info("Trigger initiated (Hotkey/Click)")
         self.last_trigger_time = time.time()
         self.is_request_pending = True
         
@@ -728,11 +781,14 @@ class FloatApp:
         try:
             # Check Control Mode
             if self.config.get("control_mode") == "extension":
+                logging.info("Sending trigger via Extension Mode")
                 self.send_extension_trigger()
                 return
                 
             # API Mode Check
-            if self.btn.state == "offline": return
+            if self.btn.state == "offline": 
+                logging.warning("Trigger ignored (Offline Mode)")
+                return
 
             # Priority 1: Manual Binding Code
             binding_code = self.config.get("binding_code", "")
@@ -750,11 +806,23 @@ class FloatApp:
                 "targetBindingId": binding_code # Manual binding code
             }
             
+            logging.info(f"Sending API trigger to {self.trigger_url}. Payload: {payload}")
+            
             # Use a slightly longer timeout to allow server to process if busy, 
             # but short enough to fail fast if down.
             resp = requests.post(self.trigger_url, json=payload, timeout=2)
+            logging.info(f"API Trigger Response: {resp.status_code}")
             
+            try:
+                r_json = resp.json()
+                if r_json.get("status") == "warning":
+                    logging.warning(f"Server Warning: {r_json.get('message')}")
+                elif r_json.get("status") == "error":
+                    logging.error(f"Server Error: {r_json.get('message')}")
+            except: pass
+
             if resp.status_code == 404:
+                logging.error("API Trigger 404 Not Found")
                 self.safe_alert("连接错误", 
                     "找不到触发端点 (404)。\n\n"
                     "请确保此 'run_button' 插件已安装在：\n"
@@ -762,7 +830,8 @@ class FloatApp:
                     "并重启 ComfyUI。", "error")
                     
         except Exception as e:
-            print(f"Trigger request failed: {e}")
+            logging.error(f"Trigger request failed: {e}")
+            # print(f"Trigger request failed: {e}")
             
         finally:
             # Always release the lock
@@ -798,24 +867,33 @@ class FloatApp:
             toggle_hotkey = self.config.get("hotkey_toggle", "F9")
             keyboard.add_hotkey(toggle_hotkey, self.toggle_smart, suppress=False)
             
+            logging.info(f"Hotkeys registered: Run='{hotkey}', Toggle='{toggle_hotkey}'")
+            
         except Exception as e:
+            logging.error(f"Hotkey registration failed: {e}")
             self.handle_hotkey_conflict("hotkey_run", hotkey, str(e))
 
     def _register_hotkey(self, key_name, callback):
         # Legacy helper, kept for compatibility if needed by dialog
         hotkey = self.config.get(key_name)
-        try: keyboard.add_hotkey(hotkey, callback)
-        except: pass
+        try: 
+            keyboard.add_hotkey(hotkey, callback)
+            logging.info(f"Single hotkey registered: {hotkey}")
+        except Exception as e:
+             logging.error(f"Single hotkey registration failed: {e}")
 
     def handle_hotkey_conflict(self, key_name, hotkey, error_msg):
+        logging.error(f"Hotkey conflict detected for {key_name} ({hotkey}): {error_msg}")
         self.root.after(0, lambda: self._show_hotkey_dialog(key_name, hotkey, error_msg))
 
     def reload_hotkeys(self):
         try:
             keyboard.unhook_all()
             self.setup_hotkey()
+            logging.info("Hotkeys reloaded manually.")
             messagebox.showinfo("快捷键", "快捷键已重新加载！")
         except Exception as e:
+            logging.error(f"Hotkey reload failed: {e}")
             messagebox.showerror("错误", f"重新加载失败：{e}")
 
     def _show_hotkey_dialog(self, key_name, hotkey, error_msg):
@@ -836,17 +914,20 @@ class FloatApp:
                 # Extension Mode: Completely ignore ComfyUI address/connectivity
                 # Force IDLE state so user can click
                 # We do NOT ping stats_url here.
-                # We also do NOT force WS connection here (it might fail due to auth).
+                
+                # IMPORTANT: Active Disconnect to save server resources
+                if self.ws:
+                    try:
+                        logging.info("Switching to Extension Mode: Closing ComfyUI WebSocket.")
+                        self.ws.close()
+                    except: pass
+                    self.ws = None
+                    self.ws_connected = False
                 
                 # If we are in "Offline" visual state, switch to Idle immediately
                 if self.btn.state == "offline":
                      self.root.after(0, lambda: self.btn.set_state("idle"))
                      
-                # Optional: We could try to connect WS 'best effort' in background, 
-                # but let's respect "completely detach". 
-                # If user wants progress, they should ensure ComfyUI is accessible or use API mode.
-                # For now, we just ensure it's clickable.
-                
                 time.sleep(1) # Check less frequently
                 continue
 
@@ -963,6 +1044,17 @@ class FloatApp:
                     self.btn.set_state("idle", 0.0, 0)
             else:
                 self.btn.set_state("running", self.btn.progress, self.btn.queue_count)
+
+        elif mtype == "ext_log":
+            # Log message from Chrome Extension
+            level = data.get("level", "info")
+            msg = data.get("message", "")
+            if level == "error":
+                logging.error(f"[ChromeExt] {msg}")
+            elif level == "warn":
+                logging.warning(f"[ChromeExt] {msg}")
+            else:
+                logging.info(f"[ChromeExt] {msg}")
 
     def run(self):
         self.root.mainloop()

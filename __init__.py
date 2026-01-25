@@ -8,23 +8,48 @@ import os
 # Since our float_run.py is a *different* client (WebSocket connection), it never sees them.
 # We patch send_sync to broadcast these specific events to ALL clients so float_run.py can stay in sync.
 
-original_send_sync = PromptServer.instance.send_sync
+# Safe Patching: Check if we already patched it to avoid infinite recursion
+if not hasattr(PromptServer.instance.send_sync, "__run_button_patched__"):
+    original_send_sync = PromptServer.instance.send_sync
 
-def broadcast_send_sync(event, data, sid=None):
-    # 1. Perform the original behavior (unicast or broadcast as intended)
-    original_send_sync(event, data, sid)
-    
-    # 2. If it was a unicast message (sid is set) AND it's a status update we care about
-    if sid is not None and event in ["progress", "executing", "execution_start", "execution_error", "execution_interrupted", "execution_cached"]:
-        # DEBUG: Log that we are broadcasting
-        # print(f"[RunButton] Broadcasting intercepted event: {event}")
+    def broadcast_send_sync(event, data, sid=None):
+        # 1. Perform the original behavior (unicast or broadcast as intended)
+        original_send_sync(event, data, sid)
         
-        # Broadcast it to everyone (sid=None)
-        original_send_sync(event, data, sid=None)
+        # 2. If it was a unicast message (sid is set) AND it's a status update we care about
+        # We want to forward this to our Observer Clients (FloatRun App)
+        # PERFORMANCE FIX: Removed "progress" event to prevent server overload/lag.
+        if sid is not None and event in ["executing", "execution_start", "execution_error", "execution_interrupted", "execution_cached"]:
+            
+            # Find all observer clients (Run Button App)
+            # We identify them by their client_id starting with "run_button_observer"
+            sockets = PromptServer.instance.sockets
+            
+            # Optimization: Check if we have any observers before iterating
+            has_observers = False
+            # This is O(N) unfortunately, but we can't easily maintain a separate list without hooking connection events.
+            # However, removing "progress" event reduces the frequency of this check by 90%.
+            
+            for obs_sid in list(sockets.keys()):
+                # Note: client_id is usually the key in sockets dict
+                # But let's be safe and check if it's a string
+                if str(obs_sid).startswith("run_button_observer"):
+                    # Send a COPY of the event to this observer
+                    # We use original_send_sync with the observer's SID
+                    # This avoids infinite recursion and avoids broadcasting to everyone
+                    try:
+                        original_send_sync(event, data, sid=obs_sid)
+                    except:
+                        pass
 
-# Apply the patch
-PromptServer.instance.send_sync = broadcast_send_sync
-print("[RunButton] Patched PromptServer.send_sync to broadcast progress events.")
+    # Mark as patched
+    broadcast_send_sync.__run_button_patched__ = True
+    
+    # Apply the patch
+    PromptServer.instance.send_sync = broadcast_send_sync
+    print("[RunButton] Patched PromptServer.send_sync to intelligently forward progress events.")
+else:
+    print("[RunButton] PromptServer.send_sync already patched. Skipping.")
 
 
 # --- Binding Map ---

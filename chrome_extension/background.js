@@ -6,19 +6,41 @@ let isConnected = false;
 const knownComfyTabs = new Set();
 let lastTitleHadPercentage = false;
 
+// Helper to send logs to Python
+function remoteLog(level, message) {
+    if (isConnected && socket && socket.readyState === WebSocket.OPEN) {
+        try {
+            socket.send(JSON.stringify({
+                type: "ext_log",
+                data: { level: level, message: message }
+            }));
+        } catch (e) {}
+    } else {
+        console.log(`[OfflineLog] ${level.toUpperCase()}: ${message}`);
+    }
+}
+
 // Clean up closed tabs
 chrome.tabs.onRemoved.addListener((tabId) => {
-    knownComfyTabs.delete(tabId);
+    if (knownComfyTabs.has(tabId)) {
+        knownComfyTabs.delete(tabId);
+        remoteLog("info", `Tab ${tabId} closed. Removed from known list.`);
+    }
 });
 
 // Monitor Title Changes for Progress (Backup Strategy)
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (changeInfo.title) {
-        // Check if this is a ComfyUI tab (Known or Heuristic)
-        let isComfy = knownComfyTabs.has(tabId);
-        if (!isComfy && isComfyHeuristic(tab)) {
-            isComfy = true;
+    // 1. Check if this is a ComfyUI tab (Known or Heuristic)
+    // Always re-evaluate on update (especially if it was just loaded)
+    if (isComfyHeuristic(tab)) {
+        if (!knownComfyTabs.has(tabId)) {
+             knownComfyTabs.add(tabId);
+             remoteLog("info", `Detected ComfyUI via Heuristic on update: ${tabId} (${tab.title})`);
         }
+    }
+    
+    if (changeInfo.title) {
+        let isComfy = knownComfyTabs.has(tabId);
 
         if (isComfy && isConnected && socket) {
             // Regex to find percentage: 50%, [50%], (50%)
@@ -77,6 +99,9 @@ function connect() {
             setInterval(() => {
                 if(socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({type: 'ping'}));
             }, 30000);
+            
+            // Send hello
+            remoteLog("info", "Chrome Extension Connected!");
         };
 
         socket.onmessage = function(event) {
@@ -84,9 +109,11 @@ function connect() {
                 const msg = JSON.parse(event.data);
                 if (msg.type === 'trigger') {
                     console.log("[RunButton Ext] Trigger received!");
+                    remoteLog("info", "Received 'trigger' command from Python.");
                     triggerComfyUI();
                 } else if (msg.type === 'stop') {
                     console.log("[RunButton Ext] Stop received!");
+                    remoteLog("info", "Received 'stop' command from Python.");
                     stopComfyUI();
                 } else if (msg.type === 'execution_success') {
                     // Force complete progress
@@ -129,18 +156,24 @@ async function triggerComfyUI() {
     
     if (!targetTab) {
         console.log("[RunButton Ext] No ComfyUI tabs found.");
+        remoteLog("error", "No ComfyUI tabs found! Make sure ComfyUI is open and loaded.");
         return;
     }
 
     // Trigger
+    remoteLog("info", `Targeting Tab: ${targetTab.id} (${targetTab.title})`);
     injectTriggerScript(targetTab);
 }
 
 async function stopComfyUI() {
     let targetTab = await findTargetTab();
-    if (!targetTab) return;
+    if (!targetTab) {
+         remoteLog("error", "No ComfyUI tabs found to stop.");
+         return;
+    }
     
     console.log("[RunButton Ext] Sending STOP to tab:", targetTab.id, targetTab.title);
+    remoteLog("info", `Sending STOP to Tab: ${targetTab.id}`);
     
     chrome.scripting.executeScript({
         target: { tabId: targetTab.id },
@@ -216,7 +249,7 @@ function isComfyHeuristic(tab) {
 async function injectTriggerScript(tab) {
     console.log("[RunButton Ext] Sending click to tab:", tab.id, tab.title);
     try {
-        chrome.scripting.executeScript({
+        await chrome.scripting.executeScript({
             target: { tabId: tab.id },
             function: () => {
                 // This runs in the page context
@@ -227,7 +260,7 @@ async function injectTriggerScript(tab) {
                 if (btn) {
                     btn.click();
                     console.log("[RunButton In-Page] Clicked #queue-button");
-                    return;
+                    return "clicked_id";
                 } 
                 
                 // 2. Try Class (ComfyUI standard class for menu buttons)
@@ -236,7 +269,7 @@ async function injectTriggerScript(tab) {
                     if (b.innerText.includes("Queue Prompt")) {
                         b.click();
                         console.log("[RunButton In-Page] Clicked .comfy-list-button");
-                        return;
+                        return "clicked_class";
                     }
                 }
 
@@ -246,11 +279,24 @@ async function injectTriggerScript(tab) {
                 if (textBtn) {
                     textBtn.click();
                     console.log("[RunButton In-Page] Clicked button by text");
+                    return "clicked_text";
+                }
+                
+                return "not_found";
+            }
+        }).then((results) => {
+            if (results && results[0] && results[0].result) {
+                const res = results[0].result;
+                if (res === "not_found") {
+                     remoteLog("warn", "Injected script ran, but 'Queue Prompt' button NOT found in DOM.");
+                } else {
+                     remoteLog("info", `Injected script success: ${res}`);
                 }
             }
         });
     } catch (e) {
         console.error("[RunButton Ext] Failed to inject script:", e);
+        remoteLog("error", `Script injection failed: ${e.message}`);
     }
 }
 
