@@ -18,8 +18,9 @@ if not hasattr(PromptServer.instance.send_sync, "__run_button_patched__"):
         
         # 2. If it was a unicast message (sid is set) AND it's a status update we care about
         # We want to forward this to our Observer Clients (FloatRun App)
-        # PERFORMANCE FIX: Removed "progress" event to prevent server overload/lag.
-        if sid is not None and event in ["executing", "execution_start", "execution_error", "execution_interrupted", "execution_cached"]:
+        # Note: 'progress' event is high-frequency. Since we fixed the infinite recursion bug,
+        # it is now safe to broadcast it again so the float ball shows progress.
+        if sid is not None and event in ["progress", "executing", "execution_start", "execution_error", "execution_interrupted", "execution_cached"]:
             
             # Find all observer clients (Run Button App)
             # We identify them by their client_id starting with "run_button_observer"

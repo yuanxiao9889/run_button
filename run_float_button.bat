@@ -28,11 +28,13 @@ exit /b
 
 :CHECK_DEPS
 :: --- 3. Check and Install Dependencies (Silent) ---
-"%PYTHON%" -c "import requests, websocket, keyboard" >nul 2>nul
+:: Added psutil to the check list
+"%PYTHON%" -c "import requests, websocket, keyboard, psutil" >nul 2>nul
 if %errorlevel% neq 0 (
     :: If missing, we MUST show a window briefly to install, otherwise user won't know why it's slow/failing
     echo Installing dependencies...
-    "%PYTHON%" -m pip install requests websocket-client keyboard >nul 2>nul
+    :: Added psutil to the install list
+    "%PYTHON%" -m pip install requests websocket-client keyboard psutil >nul 2>nul
 )
 
 :RUN
